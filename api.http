@@ -1,0 +1,7 @@
+### GetHello
+GET http://localhost:8080/hello
+
+### GetHello as 1
+GET http://localhost:8080/hello
+Authorization: 1
+

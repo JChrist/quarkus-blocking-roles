@@ -32,21 +32,35 @@ public class MyFilter {
 
     // @Blocking // this fails with IllegalStateException: Wrong usage(s) of @Blocking found
     // returning Optional<Response> will not help either
-    @ServerRequestFilter(preMatching = true)
-    public Uni<Void> filter(ContainerRequestContext requestContext) {
+    // if this is not enabled, then the `filterAfterMatch` is never reached, the request is rejected before it is called.
+    // @ServerRequestFilter(preMatching = true)
+    /* public Uni<Void> filter(ContainerRequestContext requestContext) {
         return vertx.executeBlocking(() -> {
             if (requestContext.getHeaders().containsKey(HttpHeaders.AUTHORIZATION)) {
-                final var sc = createSecurityContext(requestContext, requestContext.getHeaderString(HttpHeaders.AUTHORIZATION));
-                if (sc != null) {
+                var myEntity = fetchMyEntity(requestContext.getHeaderString(HttpHeaders.AUTHORIZATION));
+                if (myEntity != null) {
+                    final var sc = createSecurityContext(myEntity);
                     requestContext.setSecurityContext(sc);
+                }
+                if (resourceInfo == null || resourceInfo.getResourceClass() == null || resourceInfo.getResourceMethod() == null) {
+                    logger.error("resource info injection failed in pre-matching!");
+                    return null;
                 }
             }
             return null;
         });
-    }
+    } */
 
     @ServerRequestFilter()
     public Optional<Response> filterAfterMatch(ContainerRequestContext requestContext) {
+        MySecurityContext securityContext = null;
+        MyEntity myEntity = null;
+        if (requestContext.getHeaders().containsKey(HttpHeaders.AUTHORIZATION)) {
+            myEntity = fetchMyEntity(requestContext.getHeaderString(HttpHeaders.AUTHORIZATION));
+            if (myEntity != null) {
+                securityContext = createSecurityContext(myEntity);
+            }
+        }
         if (resourceInfo == null || resourceInfo.getResourceClass() == null || resourceInfo.getResourceMethod() == null) {
             logger.error("resource info injection failed!");
             return Optional.of(Response.serverError().build());
@@ -61,56 +75,67 @@ public class MyFilter {
             roles.addAll(Set.of(methodRoles));
         }
         if (!roles.isEmpty()) {
+            if (securityContext == null) {
+                logger.error("Sending unauthorized response as there are roles required and no user: {}", roles);
+                return Optional.of(Response.status(Response.Status.UNAUTHORIZED).build());
+            }
             for (var role : roles) {
-                logger.warn("second attempt to actually check role: {} for user:{}", role, requestContext.getSecurityContext().getUserPrincipal().getName());
-                if (!requestContext.getSecurityContext().isUserInRole(role)) {
+                var check = checkRole(myEntity.id, role);
+                if (!check) {
                     return Optional.of(Response.status(Response.Status.FORBIDDEN).build());
                 }
             }
+            securityContext.roles.addAll(roles);
         }
         return Optional.empty();
     }
 
     @Transactional
-    public SecurityContext createSecurityContext(ContainerRequestContext requestContext, String auth) {
+    public MyEntity fetchMyEntity(String auth) {
         try {
             long id = Long.parseLong(auth);
             final MyEntity myEntity = MyEntity.findById(id);
             MyEntity.getEntityManager().detach(myEntity);
-            return new SecurityContext() {
-                @Override
-                public Principal getUserPrincipal() {
-                    return () -> Long.toString(id);
-                }
-
-                @Override
-                public boolean isUserInRole(String role) {
-                    if (!BlockingOperationControl.isBlockingAllowed()) {
-                        logger.error("LYING THAT user:{} has role:{} AS I CANNOT BLOCK!", id, role);
-                        return true;
-                    }
-                    return checkRole(myEntity.id, role);
-                }
-
-                @Override
-                public boolean isSecure() {
-                    return requestContext.getSecurityContext().isSecure();
-                }
-
-                @Override
-                public String getAuthenticationScheme() {
-                    return SecurityContext.BASIC_AUTH;
-                }
-            };
+            return myEntity;
         } catch (Exception e) {
             logger.warn("exception", e);
             return null;
         }
     }
 
+    public MySecurityContext createSecurityContext(MyEntity myEntity) {
+        return new MySecurityContext(myEntity);
+    }
+
     @Transactional
     public boolean checkRole(long id, String role) {
         logger.info("checking role: {} for id:{}", role, id);
         return MyEntity.find("id=:id AND field=:role", Parameters.with("id", id).and("role", role)).firstResultOptional().isPresent();
+    }
+
+    public record MySecurityContext(MyEntity entity, Set<String> roles) implements SecurityContext {
+        public MySecurityContext(MyEntity myEntity) {
+            this(myEntity, new HashSet<>());
+        }
+
+        @Override
+        public Principal getUserPrincipal() {
+            return () -> Long.toString(entity.id);
+        }
+
+        @Override
+        public boolean isUserInRole(String role) {
+            return roles.contains(role);
+        }
+
+        @Override
+        public boolean isSecure() {
+            return true;
+        }
+
+        @Override
+        public String getAuthenticationScheme() {
+            return SecurityContext.BASIC_AUTH;
+        }
     }
 }

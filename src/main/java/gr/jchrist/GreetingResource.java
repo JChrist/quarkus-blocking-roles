@@ -12,7 +12,6 @@ import jakarta.ws.rs.core.SecurityContext;
 public class GreetingResource {
     @Inject SecurityContext sc;
 
-
     @GET
     @Produces(MediaType.TEXT_PLAIN)
     @RolesAllowed("field-1")

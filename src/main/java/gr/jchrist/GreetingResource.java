@@ -16,8 +16,16 @@ public class GreetingResource {
     @Produces(MediaType.TEXT_PLAIN)
     @RolesAllowed("field-1")
     public String hello() {
-        var usr = sc != null ? sc.getUserPrincipal() : null;
-        return "Hello from RESTEasy Reactive: " + (usr == null ? "<null>" : usr.getName()) + " running on thread: " + Thread.currentThread().getName();
+        String usr;
+        if (sc == null) {
+            usr = "<null sc>";
+        } else if (sc.getUserPrincipal() == null) {
+            usr = "<null principal>";
+        } else {
+            usr = sc.getUserPrincipal().getName();
+        }
+        //var usr = sc != null ? sc.getUserPrincipal() : null;
+        return "Hello from RESTEasy Reactive: " + usr + " running on thread: " + Thread.currentThread().getName();
     }
 
     @GET

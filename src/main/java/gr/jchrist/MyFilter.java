@@ -1,11 +1,9 @@
 package gr.jchrist;
 
 import io.quarkus.panache.common.Parameters;
-import io.quarkus.runtime.BlockingOperationControl;
-import io.smallrye.common.annotation.Blocking;
+import io.quarkus.security.identity.SecurityIdentity;
 import io.smallrye.mutiny.Uni;
 import io.vertx.mutiny.core.Vertx;
-import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -29,12 +27,12 @@ public class MyFilter {
 
     @Inject Vertx vertx;
     @Inject ResourceInfo resourceInfo;
+    @Inject SecurityIdentity securityIdentity;
 
-    // @Blocking // this fails with IllegalStateException: Wrong usage(s) of @Blocking found
-    // returning Optional<Response> will not help either
-    // if this is not enabled, then the `filterAfterMatch` is never reached, the request is rejected before it is called.
-    // @ServerRequestFilter(preMatching = true)
-    /* public Uni<Void> filter(ContainerRequestContext requestContext) {
+    // if this is enabled/active, then @Inject-ed ResourceInfo inside AugmentorPolicy contains null class/method
+    @ServerRequestFilter(preMatching = true)
+    public Uni<Void> filter(ContainerRequestContext requestContext) {
+        logger.info("inside pre-matching filter");
         return vertx.executeBlocking(() -> {
             if (requestContext.getHeaders().containsKey(HttpHeaders.AUTHORIZATION)) {
                 var myEntity = fetchMyEntity(requestContext.getHeaderString(HttpHeaders.AUTHORIZATION));
@@ -49,44 +47,19 @@ public class MyFilter {
             }
             return null;
         });
-    } */
+    }
 
-    @ServerRequestFilter()
+    @ServerRequestFilter
     public Optional<Response> filterAfterMatch(ContainerRequestContext requestContext) {
-        MySecurityContext securityContext = null;
-        MyEntity myEntity = null;
-        if (requestContext.getHeaders().containsKey(HttpHeaders.AUTHORIZATION)) {
-            myEntity = fetchMyEntity(requestContext.getHeaderString(HttpHeaders.AUTHORIZATION));
-            if (myEntity != null) {
-                securityContext = createSecurityContext(myEntity);
-            }
+        logger.info("inside post-match filter, identity is:{} sc principal is:{}", securityIdentity, requestContext.getSecurityContext().getUserPrincipal());
+        if (securityIdentity == null || securityIdentity.isAnonymous()) {
+            logger.warn("inside post-match filter, security identity is null/anonymous");
+            return Optional.empty();
         }
-        if (resourceInfo == null || resourceInfo.getResourceClass() == null || resourceInfo.getResourceMethod() == null) {
-            logger.error("resource info injection failed!");
-            return Optional.of(Response.serverError().build());
-        }
-        Set<String> roles = new HashSet<>();
-        if (resourceInfo.getResourceClass().isAnnotationPresent(RolesAllowed.class)) {
-            var classRoles = resourceInfo.getResourceClass().getAnnotation(RolesAllowed.class).value();
-            roles.addAll(Set.of(classRoles));
-        }
-        if (resourceInfo.getResourceMethod().isAnnotationPresent(RolesAllowed.class)) {
-            var methodRoles = resourceInfo.getResourceMethod().getAnnotation(RolesAllowed.class).value();
-            roles.addAll(Set.of(methodRoles));
-        }
-        if (!roles.isEmpty()) {
-            if (securityContext == null) {
-                logger.error("Sending unauthorized response as there are roles required and no user: {}", roles);
-                return Optional.of(Response.status(Response.Status.UNAUTHORIZED).build());
-            }
-            for (var role : roles) {
-                var check = checkRole(myEntity.id, role);
-                if (!check) {
-                    return Optional.of(Response.status(Response.Status.FORBIDDEN).build());
-                }
-            }
-            securityContext.roles.addAll(roles);
-        }
+        /* var principal = (MyEntity) securityIdentity.getPrincipal();
+        var roles = securityIdentity.getRoles();
+        requestContext.setSecurityContext(new MySecurityContext(principal, roles));
+        logger.warn("security identity contains principal: {} and roles:{}", principal, roles); */
         return Optional.empty();
     }
 
@@ -116,11 +89,12 @@ public class MyFilter {
     public record MySecurityContext(MyEntity entity, Set<String> roles) implements SecurityContext {
         public MySecurityContext(MyEntity myEntity) {
             this(myEntity, new HashSet<>());
+            // this(myEntity, new HashSet<>());
         }
 
         @Override
         public Principal getUserPrincipal() {
-            return () -> Long.toString(entity.id);
+            return entity;
         }
 
         @Override
